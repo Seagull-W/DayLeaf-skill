@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from zoneinfo import ZoneInfo
-from agenda import timestamp
+from agenda import resolve
 
 
 def card_data(snapshot, theme):
@@ -16,12 +16,12 @@ def card_data(snapshot, theme):
     zone = ZoneInfo(snapshot['timezone'])
     today = datetime.fromisoformat(snapshot['now']).astimezone(zone)
     events = []
-    for event in sorted(snapshot['events'], key=lambda e: timestamp(e['start'])):
-        start = timestamp(event['start']).astimezone(zone)
-        end = timestamp(event['end']).astimezone(zone) if event['end'] else None
-        label = start.strftime('%H:%M' if start.date() == today.date() else '%m/%d %H:%M')
+    for event in sorted(snapshot['events'], key=lambda e: (resolve(e['start'], zone)[0], e.get('id', ''))):
+        start, date_only = resolve(event['start'], zone)
+        end = resolve(event['end'], zone)[0] if event['end'] else None
+        label = '时间未定' if date_only else start.strftime('%H:%M' if start.date() == today.date() else '%m/%d %H:%M')
         if end:
-            label += ' — ' + end.strftime('%H:%M' if end.date() == today.date() else '%m/%d %H:%M')
+            label += ' — ' + end.strftime('%m/%d' if date_only else ('%H:%M' if end.date() == today.date() else '%m/%d %H:%M'))
         else:
             label += ' · 结束未定'
         events.append({'title': event['title'], 'time': label})

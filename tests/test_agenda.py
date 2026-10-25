@@ -25,6 +25,79 @@ class AgendaTests(unittest.TestCase):
         return agenda.execute(self.path, {'action': 'add', 'title': '会议',
                                          'start': '2026-10-26T09:00:00+08:00', **kwargs})
 
+    def test_date_only_storage_order_summary_and_conflicts(self):
+        timed = self.add()['event']
+        result = self.add(title='待安排', start='2026-10-26', notes='保留备注')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['conflicts'], [])
+        event = result['event']
+        self.assertEqual(event['start'], '2026-10-26')
+        self.assertEqual(set(event), {'id', 'title', 'start', 'end', 'notes'})
+        self.assertEqual(agenda.read_events(self.path), [timed, event])
+        self.assertEqual(json.loads(self.path.read_text())['version'], 1)
+        selected = agenda.execute(self.path, {'action': 'list', 'from': '2026-10-26',
+                                             'to': '2026-10-27'})['events']
+        self.assertEqual(selected, [event, timed])
+        zone = ZoneInfo('Asia/Shanghai')
+        now = datetime(2026, 10, 26, 4, tzinfo=timezone.utc)
+        text = agenda.summary([event], 'today', zone, now)
+        self.assertIn('🗓 10-26', text)
+        self.assertIn('• 时间未定  待安排', text)
+        self.assertIn('📝 保留备注', text)
+        self.assertNotRegex(text, r'\d{2}:\d{2}')
+        self.assertFalse(agenda.overlaps(event, timed, zone))
+        self.assertFalse(agenda.overlaps(timed, event, zone))
+
+    def test_omitted_start_uses_local_registration_date(self):
+        # Fixed near UTC midnight, with zones on both sides of the date line.
+        fixed = datetime(2026, 10, 26, 23, 59, 59, tzinfo=timezone.utc)
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.astimezone(tz)
+        with patch.object(agenda, 'datetime', FixedDatetime):
+            for zone in ('Pacific/Kiritimati', 'America/Adak', 'Asia/Shanghai'):
+                with self.subTest(zone=zone):
+                    expected = FixedDatetime.now(ZoneInfo(zone)).date().isoformat()
+                    result = agenda.execute(self.path, {'action': 'add', 'title': '登记', 'timezone': zone})
+                    self.assertTrue(result['ok'])
+                    self.assertEqual(result['event']['start'], expected)
+            default = agenda.execute(self.path, {'action': 'add', 'title': '默认时区'})
+            self.assertEqual(default['event']['start'], FixedDatetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat())
+
+    def test_date_precision_validation_and_multiday_selection(self):
+        for fields in (
+            {'start': '2026-13-01'}, {'start': '2026-02-30'}, {'start': '20261026'},
+            {'start': '2026-10-26T09:00:00'}, {'start': None},
+            {'start': '2026-10-26', 'end': '2026-10-27T09:00:00+08:00'},
+            {'end': '2026-10-27'},
+            {'start': '2026-10-26', 'end': '2026-10-26'},
+            {'start': '2026-10-26', 'end': '2026-10-25'},
+        ):
+            with self.subTest(fields=fields), self.assertRaises(agenda.AgendaError):
+                self.add(**fields)
+        event = self.add(start='2026-10-26', end='2026-10-28')['event']
+        for day, expected in (('2026-10-27', [event]), ('2026-10-28', [])):
+            selected = agenda.execute(self.path, {'action': 'list', 'from': day})['events']
+            self.assertEqual(selected, expected)
+
+    def test_update_time_precision_and_merge_validation(self):
+        event = self.add(end='2026-10-26T10:00:00+08:00')['event']
+        def update(changes):
+            return agenda.execute(self.path, {'action': 'update', 'id': event['id'], 'changes': changes})
+        before = self.path.read_bytes()
+        with self.assertRaises(agenda.AgendaError):
+            update({'start': '2026-10-26'})
+        self.assertEqual(self.path.read_bytes(), before)
+        result = update({'start': '2026-10-26', 'end': None})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['event']['start'], '2026-10-26')
+        result = update({'start': '2026-10-26T11:00:00+08:00', 'end': '2026-10-26T12:00:00+08:00'})
+        self.assertTrue(result['ok'])
+        self.assertEqual(agenda.read_events(self.path), [result['event']])
+        with self.assertRaises(agenda.AgendaError):
+            update({'start': None})
+
     def test_crud_and_exact_target(self):
         event = self.add()['event']
         self.assertEqual(agenda.execute(self.path, {'action': 'list', 'query': '会议'})['events'], [event])

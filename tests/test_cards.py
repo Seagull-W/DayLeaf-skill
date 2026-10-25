@@ -25,6 +25,16 @@ class CardTests(unittest.TestCase):
         self.assertEqual(data['events'][0]['time'], '10/25 23:00 — 09:00')
         self.assertIn('结束未定', data['events'][1]['time'])
 
+    def test_date_precision_labels_and_order(self):
+        snapshot = self.snapshot()
+        snapshot['events'] = [snapshot['events'][0],
+                              {'id': 'b', 'title': '未定', 'start': '2026-10-26', 'end': None},
+                              {'id': 'a', 'title': '跨日', 'start': '2026-10-26', 'end': '2026-10-28'}]
+        data = card_data(snapshot, 'light')
+        self.assertEqual([e['title'] for e in data['events']], ['跨日', '未定', '后项'])
+        self.assertEqual(data['events'][0]['time'], '时间未定 — 10/28')
+        self.assertEqual(data['events'][1]['time'], '时间未定 · 结束未定')
+
     def test_html_escapes_untrusted_title(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch('render_card.subprocess.run', side_effect=OSError('no browser')):

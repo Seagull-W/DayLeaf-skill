@@ -2,10 +2,11 @@
 """Small, local agenda. JSON stdin/stdout; Python 3.9+, POSIX."""
 import argparse
 from contextlib import contextmanager
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -29,6 +30,23 @@ def timestamp(value):
     return result.astimezone(timezone.utc)
 
 
+def validate_time(value):
+    """Return a date or an offset-aware datetime without needing a zone."""
+    if isinstance(value, str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value):
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise AgendaError('日期格式无效') from exc
+    return timestamp(value)
+
+
+def resolve(value, zone):
+    parsed = validate_time(value)
+    if isinstance(parsed, datetime):
+        return parsed.astimezone(zone), False
+    return datetime.combine(parsed, time.min, zone), True
+
+
 def validate_event(event):
     if set(event) != {'id', 'title', 'start', 'end', 'notes'}:
         raise AgendaError('日程字段无效')
@@ -38,9 +56,13 @@ def validate_event(event):
         raise AgendaError('标题不能为空')
     if event['notes'] is not None and not isinstance(event['notes'], str):
         raise AgendaError('备注必须是字符串或 null')
-    start = timestamp(event['start'])
-    if event['end'] is not None and timestamp(event['end']) <= start:
-        raise AgendaError('结束时间必须晚于开始时间')
+    start = validate_time(event['start'])
+    if event['end'] is not None:
+        end = validate_time(event['end'])
+        if isinstance(start, datetime) != isinstance(end, datetime):
+            raise AgendaError('开始与结束时间必须使用相同精度')
+        if end <= start:
+            raise AgendaError('结束时间必须晚于开始时间')
 
 
 @contextmanager
@@ -89,10 +111,14 @@ def write_events(path, events):
             os.unlink(temporary)
 
 
-def overlaps(left, right):
-    a, b = timestamp(left['start']), timestamp(right['start'])
-    ae = timestamp(left['end']) if left['end'] else a
-    be = timestamp(right['end']) if right['end'] else b
+def overlaps(left, right, zone=timezone.utc):
+    a, a_date = resolve(left['start'], zone)
+    b, b_date = resolve(right['start'], zone)
+    if a_date or b_date:
+        return False
+    a, b = a.astimezone(timezone.utc), b.astimezone(timezone.utc)
+    ae = resolve(left['end'], zone)[0].astimezone(timezone.utc) if left['end'] else a
+    be = resolve(right['end'], zone)[0].astimezone(timezone.utc) if right['end'] else b
     if ae == a:
         return a == b if be == b else b <= a < be
     if be == b:
@@ -118,8 +144,8 @@ def select(events, request, zone, now):
             raise AgendaError('period 与 from/to 不能同时使用')
         start, end = bounds(request['period'], zone, now)
     else:
-        start = timestamp(request['from']) if 'from' in request else None
-        end = timestamp(request['to']) if 'to' in request else None
+        start = resolve(request['from'], zone)[0] if 'from' in request else None
+        end = resolve(request['to'], zone)[0] if 'to' in request else None
     if start and end and start >= end:
         raise AgendaError('查询结束时间必须晚于开始时间')
     query = request.get('query', '')
@@ -127,8 +153,8 @@ def select(events, request, zone, now):
         raise AgendaError('query 必须是字符串')
     result = []
     for event in events:
-        s = timestamp(event['start'])
-        e = timestamp(event['end']) if event['end'] else s
+        s = resolve(event['start'], zone)[0]
+        e = resolve(event['end'], zone)[0] if event['end'] else s
         if start and (e < start or (e == start and e != s)):
             continue
         if end and s >= end:
@@ -136,7 +162,7 @@ def select(events, request, zone, now):
         if query.casefold() not in (event['title'] + '\n' + (event['notes'] or '')).casefold():
             continue
         result.append(event)
-    return sorted(result, key=lambda e: (timestamp(e['start']), e['id']))
+    return sorted(result, key=lambda e: (resolve(e['start'], zone)[0], e['id']))
 
 
 def clean(text):
@@ -152,13 +178,13 @@ def summary(events, period, zone, now):
     lines = [f'📅 {label}｜{dates}', f'时区：{zone.key} · 共 {len(events)} 项', '━━━━━━━━━━━━']
     previous = None
     for event in events:
-        s = timestamp(event['start']).astimezone(zone)
-        e = timestamp(event['end']).astimezone(zone) if event['end'] else None
+        s, date_only = resolve(event['start'], zone)
+        e = resolve(event['end'], zone)[0] if event['end'] else None
         if s.date() != previous:
             lines.append(f'🗓 {s:%m-%d} 周{"一二三四五六日"[s.weekday()]}')
             previous = s.date()
-        span = s.strftime('%H:%M')
-        if e:
+        span = '时间未定' if date_only else s.strftime('%H:%M')
+        if e and not date_only:
             span += '–' + e.strftime('%H:%M' if e.date() == s.date() else '%m-%d %H:%M')
         lines.append(f'• {span}  {clean(event["title"])}')
         if event['notes']:
@@ -209,7 +235,7 @@ def execute(path, request):
             write_events(path, events)
             return {'ok': True, 'deleted': old}
         if action == 'add':
-            event = {'id': uuid.uuid4().hex, 'title': request.get('title'), 'start': request.get('start'),
+            event = {'id': uuid.uuid4().hex, 'title': request.get('title'), 'start': request.get('start', now.astimezone(zone).date().isoformat()),
                      'end': request.get('end'), 'notes': request.get('notes')}
         else:
             changes = request.get('changes')
@@ -217,7 +243,7 @@ def execute(path, request):
                 raise AgendaError('changes 必须包含可修改字段 title/start/end/notes')
             event = {**old, **changes}
         validate_event(event)
-        conflicts = [e for e in events if e['id'] != event['id'] and overlaps(event, e)]
+        conflicts = [e for e in events if e['id'] != event['id'] and overlaps(event, e, zone)]
         if conflicts and not request.get('allow_conflict', False):
             return {'ok': False, 'error': 'conflict', 'message': '时间冲突，尚未保存；请用户决定是否重叠安排', 'conflicts': conflicts}
         if old:
