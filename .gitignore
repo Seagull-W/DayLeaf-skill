@@ -1,0 +1,20 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.venv/
+# Private configuration and runtime artifacts
+.env
+.env.*
+!.env.example
+config.local.*
+*.local.*
+*.log
+*.lock
+*.tmp
+*.bak
+events.json
+agenda/
+data/
+cards/
+.chrome-profile/
+deployment/

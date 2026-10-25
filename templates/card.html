@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=720">
+<title>每日安排</title>
+<style>
+:root{--bg:#f4f2ec;--ink:#242b28;--muted:#747d75;--line:#d9ded4;--accent:#467058;--panel:#e7ecdf}
+body.dark{--bg:#19231f;--ink:#edf0e8;--muted:#a7b7aa;--line:#39483e;--accent:#b8d1a2;--panel:#283a2e}
+*{box-sizing:border-box}html,body{margin:0;width:720px;background:var(--bg);color:var(--ink);font-family:"Noto Sans CJK SC","WenQuanYi Zen Hei",sans-serif}
+.page{width:720px;height:1200px;padding:54px 52px 36px;position:relative;display:flex;flex-direction:column;overflow:hidden}
+.eyebrow{font:14px sans-serif;letter-spacing:4px;color:var(--accent);margin-bottom:26px}.heading{display:flex;justify-content:space-between;align-items:center}.date{font:88px/1 sans-serif;letter-spacing:-5px;font-weight:300}.month{font-size:20px;color:var(--muted);margin-top:12px}.weekday{font-size:30px}.count{margin-top:12px;font-size:17px;color:var(--accent);padding:9px 15px;background:var(--panel);border-radius:30px;text-align:center}
+h1{font-size:35px;font-weight:500;letter-spacing:3px;margin:38px 0 10px}.rule{height:2px;background:var(--ink);margin-bottom:18px}.events{height:700px;flex:none}.event{padding:21px 0;border-bottom:1px solid var(--line)}.time{font:19px/1.5 sans-serif;color:var(--accent);letter-spacing:1px;margin-bottom:9px}.event-title{font-size:29px;line-height:1.5;overflow-wrap:anywhere;white-space:pre-wrap}.continuation{font-size:16px;color:var(--muted);margin-left:10px}.empty{padding-top:110px;font-size:35px;line-height:1.8}.empty small{display:block;font-size:21px;color:var(--muted);margin-top:14px}.footer{margin-top:auto;display:flex;justify-content:space-between;font-size:14px;color:var(--muted);letter-spacing:1px}.leaf{width:54px;height:54px;border-radius:54px 0;background:var(--accent);margin-bottom:28px}
+</style>
+<body><script id="data" type="application/json">__DATA__</script>
+<script>
+const data=JSON.parse(document.getElementById('data').textContent);document.body.className=data.theme;
+const pages=[];let box;
+function el(tag,cls,text){const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n}
+function newPage(){const page=el('section','page');page.innerHTML='<div class="eyebrow">A LITTLE SPACE FOR YOUR DAY</div><div class="heading"><div><div class="date"></div><div class="month"></div></div><div><div class="weekday"></div><div class="count"></div></div></div><h1>今日安排</h1><div class="rule"></div><div class="events"></div><div class="footer"><span></span><span class="pagination"></span></div>';page.querySelector('.date').textContent=data.day;page.querySelector('.month').textContent=data.month;page.querySelector('.weekday').textContent=data.weekday;page.querySelector('.count').textContent=data.count+' 项日程';page.querySelector('.footer span').textContent=data.timezone;document.body.append(page);pages.push(page);box=page.querySelector('.events')}
+function row(event,title,continued){const n=el('article','event');const t=el('div','time',event.time);if(continued)t.append(el('span','continuation','接上页'));n.append(t,el('div','event-title',title));return n}
+function fits(n){box.append(n);const good=n.getBoundingClientRect().bottom<=box.getBoundingClientRect().bottom;n.remove();return good}
+newPage();
+for(const event of data.events){let chars=Array.from(event.title);let continued=false;
+ while(chars.length){let n=row(event,chars.join(''),continued);if(fits(n)){box.append(n);break}
+ // Keep ordinary events together; only split a single event taller than a whole page.
+ if(box.children.length){newPage();continue}
+ let low=1,high=chars.length,best=0;while(low<=high){const mid=Math.floor((low+high)/2);if(fits(row(event,chars.slice(0,mid).join(''),continued))){best=mid;low=mid+1}else high=mid-1}
+ if(!best)throw Error('无法容纳日程');box.append(row(event,chars.splice(0,best).join(''),continued));continued=true;newPage();
+ }
+}
+if(!data.events.length){const empty=el('div','empty');empty.append(el('div','leaf'),el('div','','今天，留一点空白。'),el('small','','暂无安排，按自己的节奏出发。'));box.append(empty)}
+pages.forEach((p,i)=>p.querySelector('.pagination').textContent=String(i+1).padStart(2,'0')+' / '+String(pages.length).padStart(2,'0'));
+const meta=el('meta','');meta.name='card-pages';meta.content=pages.length;document.head.append(meta);
+const chosen=Number(new URLSearchParams(location.search).get('page')||1);pages.forEach((p,i)=>{if(i!==chosen-1)p.style.display='none'});
+</script></body></html>
