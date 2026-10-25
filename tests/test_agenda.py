@@ -37,6 +37,34 @@ class AgendaTests(unittest.TestCase):
         agenda.execute(self.path, {'action': 'delete', 'id': event['id']})
         self.assertEqual(agenda.read_events(self.path), [])
 
+    def test_notes_add_update_clear_and_summary(self):
+        notes = '1. 设置 batch_size=32\n2. 验证 loss = (y_pred - y_true)^2'
+        event = self.add(notes=notes)['event']
+        self.assertEqual(event['notes'], notes)
+        plain = self.add(title='无备注任务', start='2026-10-26T10:00:00+08:00')['event']
+        self.assertIsNone(plain['notes'])
+        self.assertEqual(agenda.read_events(self.path), [event, plain])
+
+        zone = ZoneInfo('Asia/Shanghai')
+        now = datetime(2026, 10, 26, 4, tzinfo=timezone.utc)
+        text = agenda.summary(agenda.read_events(self.path), 'today', zone, now)
+        self.assertEqual(text.count('📝'), 1)
+        for line in notes.splitlines():
+            self.assertIn(line, text)
+        self.assertIn('• 10:00  无备注任务', text)
+        self.assertNotIn('📝', text.split('• 10:00  无备注任务', 1)[1])
+
+        replacement = '验收：accuracy >= 0.95\n参考：https://example.com/spec?id=42'
+        updated = agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                            'changes': {'notes': replacement}})['event']
+        self.assertEqual(updated['notes'], replacement)
+        self.assertEqual(agenda.read_events(self.path)[-1]['notes'], replacement)
+        cleared = agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                            'changes': {'notes': None}})['event']
+        self.assertIsNone(cleared['notes'])
+        self.assertIsNone(agenda.read_events(self.path)[-1]['notes'])
+        self.assertNotIn('📝', agenda.summary(agenda.read_events(self.path), 'today', zone, now))
+
     def test_validation_conflicts_and_adjacent(self):
         for fields in ({'start': '2026-10-26T09:00:00'}, {'end': '2026-10-26T08:00:00+08:00'}, {'title': ''}):
             with self.assertRaises(agenda.AgendaError):
