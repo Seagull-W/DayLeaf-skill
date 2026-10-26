@@ -76,9 +76,28 @@ JSON
 
 成功返回 `ok:true`，退出码 0；校验、冲突或读写失败返回 `ok:false`，退出码 1。CLI 参数错误退出码 2。遇到冲突，数据尚未保存；明确接受后，在添加或修改请求中加入 `"allow_conflict":true` 重试。
 
-`start` 可省略，默认保存请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期。支持日期 `YYYY-MM-DD`（如 `2027-01-20`）或带明确 UTC 偏移的日期时间（如 `2027-01-18T09:00:00+08:00`）。`end` 可省略或为 null；有值时须与 `start` 精度相同并严格晚于开始。事件字段仍为 `{id,title,start,end,notes}`，文件版本仍为 1，旧文件可继续使用。
+`start` 可省略，默认保存请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期。支持日期 `YYYY-MM-DD`（如 `2027-01-20`）或带明确 UTC 偏移的日期时间（如 `2027-01-18T09:00:00+08:00`）。`end` 可省略或为 null；有值时须与 `start` 精度相同并严格晚于开始。事件字段为 `{id,title,start,end,notes,done}`，`done` 只接受 JSON 布尔值，添加时默认 `false`。文件版本仍为 1，旧文件可继续使用。
 
 自然语言由 Agent 解释；只给日期、未给时间或仅说“晚点”“上午/下午/晚上”时保存日期，摘要和卡片显示“时间未定”，不猜测小时。日期事项按当地零点排序，不参与冲突检测。结束时间未知时省略，不默认一小时；有钟点但无结束时间的日程按时间点检测冲突。
+
+## 完成状态
+
+用户明确表示完成后，先用 `list` 定位唯一完整 ID，再标记 `done:true`；取消标记用 `done:false`。不根据时间过去自动完成，也不把完成标记写进 `notes`。日期精度事项同样适用。
+
+`list` 和 `summary` 支持 `status:"all"`（默认）、`"pending"`、`"done"` 筛选。摘要在已完成标题前显示 ✅；卡片作为当天记录保留所有事项，已完成标题显示删除线、降低透明度，时间前显示 `✓ `。`list` 返回原始标题和布尔字段。
+
+```bash
+# 先查询并确定唯一完整 ID，再替换示例 ID
+python3 "$SKILL_DIR/scripts/agenda.py" <<'JSON'
+{"action":"update","id":"查询返回的完整ID","changes":{"done":true}}
+JSON
+
+python3 "$SKILL_DIR/scripts/agenda.py" <<'JSON'
+{"action":"list","status":"pending"}
+JSON
+```
+
+旧文件缺少 `done` 时读取为 `false`，读取不会改写文件，下次写入会持久化该字段；这是单向归一化。详见 [docs/completion.md](docs/completion.md)。
 
 ## 任务附带信息
 

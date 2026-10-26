@@ -8,6 +8,7 @@ body.dark{--bg:#19231f;--ink:#edf0e8;--muted:#a7b7aa;--line:#39483e;--accent:#b8
 .page{width:720px;height:1200px;padding:54px 52px 36px;position:relative;display:flex;flex-direction:column;overflow:hidden}
 .eyebrow{font:14px sans-serif;letter-spacing:4px;color:var(--accent);margin-bottom:26px}.heading{display:flex;justify-content:space-between;align-items:center}.date{font:88px/1 sans-serif;letter-spacing:-5px;font-weight:300}.month{font-size:20px;color:var(--muted);margin-top:12px}.weekday{font-size:30px}.count{margin-top:12px;font-size:17px;color:var(--accent);padding:9px 15px;background:var(--panel);border-radius:30px;text-align:center}
 h1{font-size:35px;font-weight:500;letter-spacing:3px;margin:38px 0 10px}.rule{height:2px;background:var(--ink);margin-bottom:18px}.events{height:700px;flex:none}.event{padding:21px 0;border-bottom:1px solid var(--line)}.time{font:19px/1.5 sans-serif;color:var(--accent);letter-spacing:1px;margin-bottom:9px}.event-title{font-size:29px;line-height:1.5;overflow-wrap:anywhere;white-space:pre-wrap}.continuation{font-size:16px;color:var(--muted);margin-left:10px}.empty{padding-top:110px;font-size:35px;line-height:1.8}.empty small{display:block;font-size:21px;color:var(--muted);margin-top:14px}.footer{margin-top:auto;display:flex;justify-content:space-between;font-size:14px;color:var(--muted);letter-spacing:1px}.leaf{width:54px;height:54px;border-radius:54px 0;background:var(--accent);margin-bottom:28px}
+.event.done{opacity:.6}.event.done .event-title{text-decoration:line-through}
 </style>
 <body><script id="data" type="application/json">__DATA__</script>
 <script>
@@ -15,7 +16,7 @@ const data=JSON.parse(document.getElementById('data').textContent);document.body
 const pages=[];let box;
 function el(tag,cls,text){const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n}
 function newPage(){const page=el('section','page');page.innerHTML='<div class="eyebrow">A LITTLE SPACE FOR YOUR DAY</div><div class="heading"><div><div class="date"></div><div class="month"></div></div><div><div class="weekday"></div><div class="count"></div></div></div><h1>今日安排</h1><div class="rule"></div><div class="events"></div><div class="footer"><span></span><span class="pagination"></span></div>';page.querySelector('.date').textContent=data.day;page.querySelector('.month').textContent=data.month;page.querySelector('.weekday').textContent=data.weekday;page.querySelector('.count').textContent=data.count+' 项日程';page.querySelector('.footer span').textContent=data.timezone;document.body.append(page);pages.push(page);box=page.querySelector('.events')}
-function row(event,title,continued){const n=el('article','event');const t=el('div','time',event.time);if(continued)t.append(el('span','continuation','接上页'));n.append(t,el('div','event-title',title));return n}
+function row(event,title,continued){const n=el('article',event.done?'event done':'event');const t=el('div','time',event.time);if(continued)t.append(el('span','continuation','接上页'));n.append(t,el('div','event-title',title));return n}
 function fits(n){box.append(n);const good=n.getBoundingClientRect().bottom<=box.getBoundingClientRect().bottom;n.remove();return good}
 newPage();
 for(const event of data.events){let chars=Array.from(event.title);let continued=false;

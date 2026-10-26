@@ -24,7 +24,8 @@ def card_data(snapshot, theme):
             label += ' — ' + end.strftime('%m/%d' if date_only else ('%H:%M' if end.date() == today.date() else '%m/%d %H:%M'))
         else:
             label += ' · 结束未定'
-        events.append({'title': event['title'], 'time': label})
+        done = event.get('done', False)
+        events.append({'title': event['title'], 'time': ('✓ ' if done else '') + label, 'done': done})
     return {'theme': theme, 'day': f'{today.day:02}', 'month': f'{today.year} / {today.month:02}',
             'weekday': '星期' + '一二三四五六日'[today.weekday()], 'count': len(events),
             'timezone': zone.key, 'events': events}

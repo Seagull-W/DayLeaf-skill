@@ -35,6 +35,22 @@ class CardTests(unittest.TestCase):
         self.assertEqual(data['events'][0]['time'], '时间未定 — 10/28')
         self.assertEqual(data['events'][1]['time'], '时间未定 · 结束未定')
 
+    def test_completed_rows_and_template(self):
+        snapshot = self.snapshot()
+        snapshot['events'][0]['done'] = True
+        snapshot['events'].append({'title': '健身', 'start': '2026-10-26', 'end': None, 'done': True})
+        events = card_data(snapshot, 'light')['events']
+        self.assertIs(events[0]['done'], False)
+        self.assertFalse(events[0]['time'].startswith('✓ '))
+        self.assertIs(events[1]['done'], True)
+        self.assertEqual(events[1]['time'], '✓ 时间未定 · 结束未定')
+        self.assertIs(events[2]['done'], True)
+        self.assertEqual(events[2]['time'], '✓ 14:00 · 结束未定')
+        template = (Path(__file__).resolve().parents[1] / 'templates' / 'card.html').read_text()
+        self.assertIn("event.done?'event done':'event'", template)
+        self.assertIn('.event.done .event-title{text-decoration:line-through}', template)
+        self.assertIn('.event.done{opacity:.6}', template)
+
     def test_html_escapes_untrusted_title(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch('render_card.subprocess.run', side_effect=OSError('no browser')):

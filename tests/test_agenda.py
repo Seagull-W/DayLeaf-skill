@@ -32,7 +32,7 @@ class AgendaTests(unittest.TestCase):
         self.assertEqual(result['conflicts'], [])
         event = result['event']
         self.assertEqual(event['start'], '2026-10-26')
-        self.assertEqual(set(event), {'id', 'title', 'start', 'end', 'notes'})
+        self.assertEqual(set(event), {'id', 'title', 'start', 'end', 'notes', 'done'})
         self.assertEqual(agenda.read_events(self.path), [timed, event])
         self.assertEqual(json.loads(self.path.read_text())['version'], 1)
         selected = agenda.execute(self.path, {'action': 'list', 'from': '2026-10-26',
@@ -47,6 +47,63 @@ class AgendaTests(unittest.TestCase):
         self.assertNotRegex(text, r'\d{2}:\d{2}')
         self.assertFalse(agenda.overlaps(event, timed, zone))
         self.assertFalse(agenda.overlaps(timed, event, zone))
+
+    def test_done_validation_roundtrip_and_toggle(self):
+        event = self.add(notes='操作细节')['event']
+        self.assertIs(event['done'], False)
+        self.add(start='2026-10-27', done=True)
+        self.assertIs(agenda.read_events(self.path)[1]['done'], True)
+        for value in (1, 0, 'true', None):
+            with self.subTest(value=value), self.assertRaises(agenda.AgendaError):
+                self.add(start='2026-10-28', done=value)
+            with self.assertRaises(agenda.AgendaError):
+                agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                           'changes': {'done': value}})
+        for done in (True, False):
+            updated = agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                                'changes': {'done': done}})['event']
+            self.assertEqual(updated, {**event, 'done': done})
+            self.assertEqual(next(e for e in agenda.read_events(self.path) if e['id'] == event['id']), updated)
+
+    def test_legacy_done_normalization_without_read_write(self):
+        event = self.add()['event']
+        legacy = {key: value for key, value in event.items() if key != 'done'}
+        self.path.write_text(json.dumps({'version': 1, 'events': [legacy]}))
+        before = self.path.read_bytes()
+        agenda.validate_event(legacy)
+        self.assertEqual(agenda.read_events(self.path), [event])
+        self.assertEqual(agenda.execute(self.path, {'action': 'list'})['events'], [event])
+        self.assertEqual(self.path.read_bytes(), before)
+        self.add(start='2026-10-27')
+        stored = json.loads(self.path.read_text())
+        self.assertEqual(stored['version'], 1)
+        self.assertTrue(all(e['done'] is False for e in stored['events']))
+
+    def test_status_filters_and_completed_summary(self):
+        pending = self.add(title='待处理', start='2026-10-26')['event']
+        dated = self.add(title='健身', start='2026-10-26', done=True)['event']
+        timed = self.add(title='精读论文', done=True, notes='保留备注')['event']
+        all_events = [pending, dated, timed]
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 26, 4, tzinfo=timezone.utc).astimezone(tz)
+        for status, expected in (('pending', [pending]), ('done', [dated, timed]), ('all', all_events)):
+            for action in ('list', 'summary'):
+                with self.subTest(status=status, action=action), patch.object(agenda, 'datetime', FixedDatetime):
+                    result = agenda.execute(self.path, {'action': action, 'period': 'today', 'status': status})
+                    self.assertEqual({e['id'] for e in result['events']}, {e['id'] for e in expected})
+        self.assertEqual(len(agenda.execute(self.path, {'action': 'list'})['events']), 3)
+        for action in ('list', 'summary'):
+            with self.assertRaisesRegex(agenda.AgendaError, 'status 只支持'):
+                agenda.execute(self.path, {'action': action, 'status': 'unknown'})
+        text = agenda.summary(all_events, 'today', ZoneInfo('Asia/Shanghai'),
+                              datetime(2026, 10, 26, 4, tzinfo=timezone.utc))
+        self.assertIn('• 时间未定  待处理', text)
+        self.assertIn('• 时间未定  ✅ 健身', text)
+        self.assertIn('• 09:00  ✅ 精读论文', text)
+        self.assertEqual(text.count('✅'), 2)
+        self.assertIn('📝 保留备注', text)
 
     def test_omitted_start_uses_local_registration_date(self):
         # Fixed near UTC midnight, with zones on both sides of the date line.

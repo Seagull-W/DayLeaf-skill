@@ -27,7 +27,9 @@ python3 ~/.hermes/skills/productivity/DayLeaf/scripts/agenda.py <<'JSON'
 JSON
 ```
 
-`add` 的 `title` 必填；`start` 可省略，省略时以请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期保存。`start` 接受 `YYYY-MM-DD` 日期或带 UTC 偏移的 ISO 8601 日期时间。`end` 可省略或为 null；有值时必须与 `start` 精度相同且严格晚于开始。`notes` 可省略或为 null。存储字段保持 `{id,title,start,end,notes}`，文件版本仍为 1，兼容旧日程。
+`add` 的 `title` 必填；`start` 可省略，省略时以请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期保存。`start` 接受 `YYYY-MM-DD` 日期或带 UTC 偏移的 ISO 8601 日期时间。`end` 可省略或为 null；有值时必须与 `start` 精度相同且严格晚于开始。`notes` 可省略或为 null。存储字段为 `{id,title,start,end,notes,done}`；`done` 为布尔值，添加时可省略，默认 `false`。文件版本仍为 1，兼容旧日程。
+
+`list` 请求字段：`period`、`from`、`to`、`query`、`status`、`timezone`；`summary` 请求字段：`period`、`status`、`timezone`。`status` 可为 `all`（默认）、`pending` 或 `done`，分别查询全部、未完成或已完成事项。
 
 接口示例（每行代表一次独立调用）：
 
@@ -66,6 +68,21 @@ JSON
 用户未指定钟点、只给日期，或只说“上午/下午/晚上/晚点”，均按日期精度登记，不默认 09:00 或其他小时；只有准确时间对用户有实质影响时才追问。没有日期时以登记当天为锚点；例如当前日期为 2026-10-26，用户说“明天整理资料”，保存 `start: "2026-10-27"`。无日期也无钟点时可省略 `start`，脚本使用请求时区的当天日期。
 
 日期事项在当天按当地零点排序，排在当天有钟点的事项之前；不参与冲突检测。文本 `summary` 和卡片都显示“时间未定”，卡片在无结束日期时还显示“结束未定”。跨日事项可给日期形式的 `end`，必须严格晚于 `start`。修改可在日期与具体时间之间转换，同时处理原有 `end`，合并后两者必须精度一致；`end:null` 可清空结束时间，`start` 不可清空。
+
+## 完成状态
+
+- 仅当用户明确说事项已完成或要求标记完成时，先用 `list` 定位唯一完整 ID，再通过 `update` + `changes.done:true` 标记；目标不唯一时先澄清。
+- 不因时间过去自动推断完成；日期精度事项同样支持完成状态。不得通过往 `notes` 写入“✅ 已完成”等标记保存完成状态。
+- 查询待办使用 `status:"pending"`；取消完成标记使用 `changes.done:false`，只修改用户指定字段。
+- `done` 只接受 JSON 布尔值。旧文件缺少该字段时读取为 `false`，读取不改文件，下次写入会持久化该字段；文件版本仍为 1。这是单向归一化。
+- 文本摘要在已完成标题前显示 ✅；卡片保留所有事项，已完成项标题加删除线、降低透明度，时间前加 `✓ `；`list` 返回布尔字段。
+
+```json
+{"action":"update","id":"查询返回的完整ID","changes":{"done":true}}
+{"action":"list","status":"pending"}
+```
+
+语义与兼容性说明见 [docs/completion.md](docs/completion.md)。
 
 ## 任务附带信息（notes）
 
