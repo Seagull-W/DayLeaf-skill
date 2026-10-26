@@ -35,6 +35,23 @@ class CardTests(unittest.TestCase):
         self.assertEqual(data['events'][0]['time'], '时间未定 — 10/28')
         self.assertEqual(data['events'][1]['time'], '时间未定 · 结束未定')
 
+    def test_deadline_label_composition(self):
+        snapshot = self.snapshot()
+        snapshot['events'] = [
+            {'id': 'a', 'title': '经济学作业', 'start': '2026-10-26', 'end': None,
+             'due': '2026-10-27T09:00:00+08:00'},
+            {'id': 'b', 'title': '已完成', 'start': '2026-10-26', 'end': None,
+             'due': '2026-10-26T01:00:00Z', 'done': True},
+            {'id': 'c', 'title': '日期截止', 'start': '2026-10-26', 'end': None,
+             'due': '2026-10-27'}]
+        events = card_data(snapshot, 'light')['events']
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[0]['time'], '时间未定 · 结束未定 · 截止 10/27 09:00')
+        self.assertEqual(events[1]['time'], '✓ 时间未定 · 结束未定 · 截止 09:00')
+        self.assertIs(events[1]['done'], True)
+        self.assertEqual(events[2]['time'], '时间未定 · 结束未定 · 截止 10/27')
+        self.assertEqual(set(events[0]), {'title', 'time', 'done'})
+
     def test_completed_rows_and_template(self):
         snapshot = self.snapshot()
         snapshot['events'][0]['done'] = True

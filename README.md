@@ -76,7 +76,7 @@ JSON
 
 成功返回 `ok:true`，退出码 0；校验、冲突或读写失败返回 `ok:false`，退出码 1。CLI 参数错误退出码 2。遇到冲突，数据尚未保存；明确接受后，在添加或修改请求中加入 `"allow_conflict":true` 重试。
 
-`start` 可省略，默认保存请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期。支持日期 `YYYY-MM-DD`（如 `2027-01-20`）或带明确 UTC 偏移的日期时间（如 `2027-01-18T09:00:00+08:00`）。`end` 可省略或为 null；有值时须与 `start` 精度相同并严格晚于开始。事件字段为 `{id,title,start,end,notes,done}`，`done` 只接受 JSON 布尔值，添加时默认 `false`。文件版本仍为 1，旧文件可继续使用。
+`start` 可省略，默认保存请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期。支持日期 `YYYY-MM-DD`（如 `2027-01-20`）或带明确 UTC 偏移的日期时间（如 `2027-01-18T09:00:00+08:00`）。`end` 可省略或为 null；有值时须与 `start` 精度相同并严格晚于开始。事件字段为 `{id,title,start,end,notes,done,due}`，`done` 只接受 JSON 布尔值，添加时默认 `false`。`due` 是可选截止时间，默认 null，接受与 `start` 相同的两种形式且精度独立。文件版本仍为 1，旧文件可继续使用。
 
 自然语言由 Agent 解释；只给日期、未给时间或仅说“晚点”“上午/下午/晚上”时保存日期，摘要和卡片显示“时间未定”，不猜测小时。日期事项按当地零点排序，不参与冲突检测。结束时间未知时省略，不默认一小时；有钟点但无结束时间的日程按时间点检测冲突。
 
@@ -98,6 +98,36 @@ JSON
 ```
 
 旧文件缺少 `done` 时读取为 `false`，读取不会改写文件，下次写入会持久化该字段；这是单向归一化。详见 [docs/completion.md](docs/completion.md)。
+
+## 截止时间
+
+`due` 表示到期时间，`start` 保留登记或计划执行时间，`end` 表示执行结束。日期精度的 `start` 可以配带钟点的 `due`，例如今天登记、明天 09:00 截止的经济学作业。截止不参与冲突检测。`due` 可为 null、`YYYY-MM-DD` 或带 UTC 偏移的 ISO 8601 日期时间；不得早于开始锚点，允许相等，日期按请求时区当地零点解析。用 `changes.due` 调整，传 null 清空。
+
+```bash
+python3 "$SKILL_DIR/scripts/agenda.py" <<'JSON'
+{"action":"add","title":"经济学作业","start":"2026-10-26","due":"2026-10-27T09:00:00+08:00"}
+JSON
+
+python3 "$SKILL_DIR/scripts/agenda.py" <<'JSON'
+{"action":"list","status":"pending","due_before":"2026-10-27T09:00:00+08:00","timezone":"Asia/Shanghai"}
+JSON
+```
+
+`list`、`summary` 可用 `due_before` 筛出截止非空且小于等于上限的事项，再与 `status` 组合；上限接受相同两种时间形式，日期上限表示当地零点。自动提醒可使用下述 `due_watch.py`。提醒查询使用不带登记日期范围的 `list`，避免遗漏旧任务；`summary` 仍限于 today/week。
+
+文本摘要在标题后加 `  ⏰ 截止 09:00`（当天）、`  ⏰ 截止 10-27 09:00`（其他日期）或 `  ⏰ 截止 10-27`（日期期限）。卡片在现有时间标签后加 ` · 截止 10/27 09:00`（当天仅显示钟点，日期期限仅显示月日），保留完成标记与分页结构。`list` 返回原始 `due`。
+
+旧文件缺少 `due` / `done` 时读取为 null / false，读取不写文件，下次成功写入持久化，保持单向归一化。UTC 读取校验及完整规则见 [docs/deadline.md](docs/deadline.md)。
+
+### 截止提醒
+
+技能本身不安排定时任务。外部调度器（如 Hermes cron）可每 10 分钟运行以下命令；将路径替换为本机绝对路径，并确认 Python 解释器路径：
+
+```cron
+*/10 * * * * /usr/bin/python3 /absolute/path/DayLeaf/scripts/due_watch.py --data /absolute/path/agenda/events.json --timezone Asia/Shanghai
+```
+
+未完成事项在截止前 2 小时内首次输出提醒，错过窗口的事项可在截止后 12 小时内补报“已过期”。日期截止按当地零点计算，只显示日期。脚本只打印，无网络、无发送、无 LLM；调度器逐字投递非空 stdout，空 stdout 不发送，stderr 用于错误。默认 `due-reminders.json` 位于数据文件旁，以 ID + 原始截止值去重；`--dry-run` 只预览、不更新状态。更多参数及投递约定见 [截止文档](docs/deadline.md#提醒)。
 
 ## 任务附带信息
 

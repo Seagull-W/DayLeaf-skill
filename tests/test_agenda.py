@@ -32,7 +32,7 @@ class AgendaTests(unittest.TestCase):
         self.assertEqual(result['conflicts'], [])
         event = result['event']
         self.assertEqual(event['start'], '2026-10-26')
-        self.assertEqual(set(event), {'id', 'title', 'start', 'end', 'notes', 'done'})
+        self.assertEqual(set(event), {'id', 'title', 'start', 'end', 'notes', 'done', 'due'})
         self.assertEqual(agenda.read_events(self.path), [timed, event])
         self.assertEqual(json.loads(self.path.read_text())['version'], 1)
         selected = agenda.execute(self.path, {'action': 'list', 'from': '2026-10-26',
@@ -47,6 +47,115 @@ class AgendaTests(unittest.TestCase):
         self.assertNotRegex(text, r'\d{2}:\d{2}')
         self.assertFalse(agenda.overlaps(event, timed, zone))
         self.assertFalse(agenda.overlaps(timed, event, zone))
+
+    def test_deadline_roundtrip_and_clear(self):
+        for due in ('2026-10-27T09:00:00+08:00', None, '2026-10-27'):
+            with self.subTest(due=due):
+                fields = {} if due is None else {'due': due}
+                event = self.add(start='2026-10-26', **fields)['event']
+                self.assertEqual(event['due'], due)
+                self.assertEqual(agenda.read_events(self.path)[-1], event)
+                listed = agenda.execute(self.path, {'action': 'list'})['events']
+                self.assertEqual(next(e for e in listed if e['id'] == event['id'])['due'], due)
+        updated = agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                            'changes': {'due': '2026-10-28T09:00:00+08:00'}})['event']
+        self.assertEqual(updated['due'], '2026-10-28T09:00:00+08:00')
+        cleared = agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                            'changes': {'due': None}})['event']
+        self.assertIsNone(cleared['due'])
+        self.assertEqual(agenda.read_events(self.path)[-1], cleared)
+
+    def test_invalid_deadlines_and_ordering_preserve_file(self):
+        event = self.add(start='2026-10-26', due='2026-10-27')['event']
+        before = self.path.read_bytes()
+        for due in (1, '', '2026-10-27T09:00:00', '2026-13-01',
+                    '2026-10-25', '2026-10-25T23:59:59+08:00'):
+            with self.subTest(due=due):
+                with self.assertRaises(agenda.AgendaError):
+                    self.add(start='2026-10-26', due=due)
+                with self.assertRaises(agenda.AgendaError):
+                    agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                               'changes': {'due': due}})
+                self.assertEqual(self.path.read_bytes(), before)
+        with self.assertRaisesRegex(agenda.AgendaError, '截止时间不得早于'):
+            agenda.execute(self.path, {'action': 'update', 'id': event['id'],
+                                       'changes': {'start': '2026-10-28'}})
+        with self.assertRaises(agenda.AgendaError):
+            self.add(start='2026-10-26T09:00:00+08:00', due='2026-10-26')
+        for start, due in (('2026-10-26', '2026-10-26'),
+                           ('2026-10-26', '2026-10-26T00:00:00+08:00'),
+                           ('2026-10-26T00:00:00+08:00', '2026-10-26'),
+                           ('2026-10-26T09:00:00+08:00', '2026-10-26T01:00:00Z')):
+            with self.subTest(start=start, due=due):
+                self.assertTrue(self.add(start=start, due=due, allow_conflict=True)['ok'])
+
+    def test_deadline_request_zone_and_no_conflict(self):
+        event = agenda.execute(self.path, {'action': 'add', 'title': '作业',
+                                           'start': '2026-10-26',
+                                           'due': '2026-10-26T00:00:00+08:00',
+                                           'timezone': 'Asia/Shanghai'})['event']
+        # The same instant precedes a date anchor in UTC, so request zone matters.
+        with self.assertRaisesRegex(agenda.AgendaError, '截止时间不得早于'):
+            agenda.execute(self.path, {'action': 'add', 'title': 'UTC 作业',
+                                       'start': event['start'], 'due': event['due'],
+                                       'timezone': 'UTC'})
+        meeting = self.add(start=event['due'])
+        self.assertTrue(meeting['ok'])
+        self.assertEqual(meeting['conflicts'], [])
+
+    def test_stored_deadline_ordering_without_request_zone(self):
+        # A local midnight is still the previous UTC day; both mixed forms load.
+        for start, due in (('2026-10-26', '2026-10-26T00:00:00+08:00'),
+                           ('2026-10-26T00:00:00-08:00', '2026-10-26')):
+            event = {'id': 'one', 'title': '任务', 'start': start, 'end': None,
+                     'notes': None, 'due': due}
+            self.path.write_text(json.dumps({'version': 1, 'events': [event]}))
+            self.assertEqual(agenda.read_events(self.path)[0]['due'], due)
+        for start, due in (('2026-10-28', '2026-10-26'),
+                           ('2026-10-28', '2026-10-26T09:00:00+08:00'),
+                           ('2026-10-28T09:00:00+08:00', '2026-10-26'),
+                           ('2026-10-26T09:00:00+08:00', '2026-10-26T08:00:00+08:00')):
+            with self.subTest(start=start, due=due):
+                event.update(start=start, due=due)
+                self.path.write_text(json.dumps({'version': 1, 'events': [event]}))
+                with self.assertRaisesRegex(agenda.AgendaError, '截止时间不得早于'):
+                    agenda.read_events(self.path)
+
+    def test_due_before_filters_and_pending_reminders(self):
+        due = '2026-10-27T09:00:00+08:00'
+        pending = self.add(start='2026-10-26', due=due)['event']
+        done = self.add(start='2026-10-26', due=due, done=True)['event']
+        dated = self.add(start='2026-10-26', due='2026-10-27')['event']
+        self.add(start='2026-10-26')
+        self.add(start='2026-10-26', due='2026-10-27T09:00:01+08:00')
+        zone = ZoneInfo('Asia/Shanghai')
+        now = datetime(2026, 10, 26, 4, tzinfo=timezone.utc)
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now.astimezone(tz)
+        for action in ('list', 'summary'):
+            for status, expected in (('pending', [pending, dated]), ('all', [pending, done, dated])):
+                request = {'action': action, 'due_before': due}
+                if status == 'pending':
+                    request['status'] = status
+                with self.subTest(action=action, status=status), patch.object(agenda, 'datetime', FixedDatetime):
+                    selected = agenda.execute(self.path, request)['events']
+                    self.assertEqual({e['id'] for e in selected}, {e['id'] for e in expected})
+        self.assertEqual(agenda.select(agenda.read_events(self.path), {'due_before': '2026-10-27'}, zone, now), [dated])
+        for value in (None, 1, '', '2026-10-27T09:00:00', '2026-13-01'):
+            with self.subTest(value=value), self.assertRaises(agenda.AgendaError):
+                agenda.execute(self.path, {'action': 'list', 'due_before': value})
+
+    def test_summary_deadline_labels(self):
+        events = [self.add(title='当天', start='2026-10-26', due='2026-10-26T01:00:00Z')['event'],
+                  self.add(title='经济学作业', start='2026-10-26', due='2026-10-27T09:00:00+08:00', done=True)['event'],
+                  self.add(title='日期', start='2026-10-26', due='2026-10-27')['event']]
+        text = agenda.summary(events, 'today', ZoneInfo('Asia/Shanghai'),
+                              datetime(2026, 10, 26, 4, tzinfo=timezone.utc))
+        self.assertIn('• 时间未定  当天  ⏰ 截止 09:00', text)
+        self.assertIn('• 时间未定  ✅ 经济学作业  ⏰ 截止 10-27 09:00', text)
+        self.assertIn('• 时间未定  日期  ⏰ 截止 10-27', text.splitlines())
 
     def test_done_validation_roundtrip_and_toggle(self):
         event = self.add(notes='操作细节')['event']
@@ -67,7 +176,7 @@ class AgendaTests(unittest.TestCase):
 
     def test_legacy_done_normalization_without_read_write(self):
         event = self.add()['event']
-        legacy = {key: value for key, value in event.items() if key != 'done'}
+        legacy = {key: value for key, value in event.items() if key not in ('done', 'due')}
         self.path.write_text(json.dumps({'version': 1, 'events': [legacy]}))
         before = self.path.read_bytes()
         agenda.validate_event(legacy)
@@ -78,6 +187,7 @@ class AgendaTests(unittest.TestCase):
         stored = json.loads(self.path.read_text())
         self.assertEqual(stored['version'], 1)
         self.assertTrue(all(e['done'] is False for e in stored['events']))
+        self.assertTrue(all(e['due'] is None for e in stored['events']))
 
     def test_status_filters_and_completed_summary(self):
         pending = self.add(title='待处理', start='2026-10-26')['event']

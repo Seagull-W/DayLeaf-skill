@@ -1,0 +1,62 @@
+# 截止时间（due）
+
+`start` 是登记或计划执行的时间，`end` 是执行结束时间，`due` 是任务到期的边界。分开保存才能表达“今天登记、时间未定、明天 09:00 截止”，而不把登记日移到明天或把执行时长延伸到截止。截止不占用时间、不参与冲突检测、不自动标记完成。
+
+`add` 可省略 `due`（默认 null）；`update` 的 `changes.due` 可调整，null 可清空。非空值与 `start` 接受相同两种形式：日期 `YYYY-MM-DD` 或带明确 UTC 偏移的 ISO 8601 日期时间（例如 `2026-10-27T09:00:00+08:00` 或 `2026-10-27T01:00:00Z`）。精度独立，日期开始配钟点截止有效。数字、空字符串、无偏移日期时间和无效日期均拒绝。
+
+## 顺序与时区
+
+写入时先校验格式，再按请求 `timezone`（默认 `Asia/Shanghai`）解析，要求 `due >= start`，允许相等；日期值按当地零点锚定，带偏移的时间按实际瞬间比较。此规则也适用于修改 `start` 后的合并事件。日期截止表示当天零点，不隐含 23:59 或当天结束。
+
+文件没有保存原请求时区。`read_events` 因此采用 UTC 锚点做保守校验：相同精度严格要求截止不早于开始；混合精度时，UTC 锚点差允许最多提前 24 小时（覆盖可能的时区偏移），超过才拒绝。这样不会误拒绝在 +08:00 或其他请求时区下合法的数据；读取检查不能代替写入时按请求时区的严格校验。
+
+## 显示
+
+| 入口 | 截止显示 |
+| --- | --- |
+| 文本 `summary` | 标题后追加 `  ⏰ 截止 09:00`（与 `now` 的当地日期相同），否则 `  ⏰ 截止 10-27 09:00`；日期期限为 `  ⏰ 截止 10-27` |
+| `render_card.card_data` | 原时间标签后追加 ` · 截止 10/27 09:00`；当天仅显示钟点，日期期限仅显示 `10/27`；不新增 DOM 行，不改变分页 |
+| `list` | 返回原始 `due` 值或 null，不格式化 |
+
+日期期限不显示虚构钟点。已完成项保留摘要的 ✅ 和卡片时间前的 `✓ `，同时保留截止后缀。
+
+## 提醒候选查询
+
+`list`、`summary` 的 `due_before` 接受上述两种形式，按请求时区解析日期值，包含 `due <= due_before` 的事项；无截止的事项排除。可与 `status`、其他查询条件叠加。
+
+```json
+{"action":"list","status":"pending","due_before":"2026-10-27T09:00:00+08:00","timezone":"Asia/Shanghai"}
+```
+
+调用方计算提醒窗口上限并执行该查询，即可取得未完成且已到期或即将到期的候选。提醒查询不要加登记日期范围；`summary` 默认 today，仍按登记/执行范围筛选，可能遗漏早先登记的任务。`agenda.py` 只返回候选；下述独立提醒脚本负责窗口判断与去重。
+
+## 提醒
+
+`scripts/due_watch.py` 通过 `agenda.read_events` 读取数据，沿用 `agenda.resolve` 的日期与时区规则，不受事项登记日期范围限制。仅处理 `due` 非空且 `done:false` 的事项：
+
+- 即将截止：`now < due <= now + window`，默认窗口为 120 分钟。
+- 已过期补报：`due <= now < due + grace`，默认宽限为 720 分钟，标为“已过期”；到达宽限边界后不再补报。
+
+日期截止按 `--timezone`（默认 `Asia/Shanghai`）的当地零点解析。带钟点的截止显示 `MM-DD HH:MM` 和剩余或过期的小时、分钟（不足一分钟按 0 分）；日期截止只显示 `MM-DD`，不显示分钟数，过期时仍标“已过期”。标题逐字保留，不截断。
+
+默认状态路径为 `<data parent>/due-reminders.json`，可用 `--state PATH` 覆盖。结构为 `{"version":1,"sent":{"<event id>@<due value>":"UTC ISO timestamp"}}`，键使用原始截止字符串。已记录的同一 ID + due 不再输出；修改 due 产生新键，旧键保留以避免改回原截止后重复提醒。事项删除或标记完成后，其全部键会清理。状态以同目录临时文件、fsync、`os.replace` 原子写入，并使用稳定 sidecar 锁保护并发读改写。损坏状态报错且不覆盖。
+
+技能不安排任何定时任务。外部调度器（如 Hermes cron）可每约 10 分钟执行以下模板，部署者替换绝对路径并确认 Python 路径：
+
+```cron
+*/10 * * * * /usr/bin/python3 /absolute/path/DayLeaf/scripts/due_watch.py --data /absolute/path/agenda/events.json --timezone Asia/Shanghai
+```
+
+脚本无发送、无网络、无 LLM。调度器契约：非空 stdout 是完整提醒块，应逐字投递；**空 stdout = 没有内容要发送**，退出码仍为 0。数据文件缺失视为无事项；真实错误写 stderr，退出非零，不能作为提醒投递。状态在输出前保存，表示已生成公告而非渠道确认送达；若后续投递失败，脚本不会自动重发，可靠投递由调度器负责。
+
+`--dry-run` 按现有去重状态预览，不创建或修改状态及锁文件。`--now ISO` 必须带 UTC 偏移，可固定测试时钟；`--window-minutes`、`--grace-minutes` 接受非负整数，可调整窗口和补报宽限。例如：
+
+```bash
+/usr/bin/python3 /absolute/path/DayLeaf/scripts/due_watch.py --data /absolute/path/agenda/events.json --timezone Asia/Shanghai --dry-run --now 2026-10-27T07:40:00+08:00
+```
+
+## 旧文件
+
+文件版本保持 1，事件字段为 `{id,title,start,end,notes,done,due}`。旧事件可以缺少 `due` 和/或 `done`，`read_events` 在内存中补 `due:null`、`done:false`，读取本身不改写文件；下一次成功写入会把归一化字段保存。这是单向归一化，无需独立迁移，不解析或迁移备注中的旧截止描述。
+
+调用规范见 [SKILL.md](../SKILL.md)，CLI 示例见 [README.md](../README.md)。

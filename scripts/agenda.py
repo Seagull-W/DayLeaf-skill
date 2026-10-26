@@ -48,8 +48,8 @@ def resolve(value, zone):
 
 
 def validate_event(event):
-    if set(event) not in ({'id', 'title', 'start', 'end', 'notes'},
-                          {'id', 'title', 'start', 'end', 'notes', 'done'}):
+    required = {'id', 'title', 'start', 'end', 'notes'}
+    if not required <= set(event) or set(event) - required - {'done', 'due'}:
         raise AgendaError('日程字段无效')
     if not isinstance(event['id'], str) or not event['id']:
         raise AgendaError('ID 无效')
@@ -59,6 +59,8 @@ def validate_event(event):
         raise AgendaError('备注必须是字符串或 null')
     if 'done' in event and not isinstance(event['done'], bool):
         raise AgendaError('done 必须是布尔值')
+    if event.get('due') is not None:
+        validate_time(event['due'])
     start = validate_time(event['start'])
     if event['end'] is not None:
         end = validate_time(event['end'])
@@ -66,6 +68,27 @@ def validate_event(event):
             raise AgendaError('开始与结束时间必须使用相同精度')
         if end <= start:
             raise AgendaError('结束时间必须晚于开始时间')
+
+
+def validate_deadline(event, zone, stored=False):
+    if event.get('due') is None:
+        return
+    start, start_date = resolve(event['start'], zone)
+    due, due_date = resolve(event['due'], zone)
+    # Files do not retain the request zone. For mixed precision only, allow
+    # the full possible UTC offset (<24h) around the UTC midnight anchor.
+    # Same-precision ordering is zone independent and needs no allowance.
+    allowance = timedelta(days=1) if stored and start_date != due_date else timedelta(0)
+    if due.astimezone(timezone.utc) - start.astimezone(timezone.utc) < -allowance:
+        raise AgendaError('截止时间不得早于开始时间（日期按当地零点计算）')
+
+
+def deadline_label(value, zone, now, separator='-'):
+    due, date_only = resolve(value, zone)
+    day = due.strftime('%m' + separator + '%d')
+    if date_only:
+        return day
+    return due.strftime('%H:%M') if due.date() == now.astimezone(zone).date() else day + due.strftime(' %H:%M')
 
 
 @contextmanager
@@ -90,6 +113,8 @@ def read_events(path):
             raise AgendaError('数据文件日程无效')
         validate_event(event)
         event.setdefault('done', False)
+        event.setdefault('due', None)
+        validate_deadline(event, timezone.utc, stored=True)
         if event['id'] in ids:
             raise AgendaError('数据文件包含重复 ID')
         ids.add(event['id'])
@@ -158,9 +183,13 @@ def select(events, request, zone, now):
     status = request.get('status', 'all')
     if status not in ('all', 'pending', 'done'):
         raise AgendaError('status 只支持 all、pending 或 done')
+    due_before = resolve(request['due_before'], zone)[0].astimezone(timezone.utc) if 'due_before' in request else None
     result = []
     for event in events:
         if status != 'all' and event.get('done', False) != (status == 'done'):
+            continue
+        if due_before is not None and (event.get('due') is None or
+                                       resolve(event['due'], zone)[0].astimezone(timezone.utc) > due_before):
             continue
         s = resolve(event['start'], zone)[0]
         e = resolve(event['end'], zone)[0] if event['end'] else s
@@ -196,7 +225,8 @@ def summary(events, period, zone, now):
         if e and not date_only:
             span += '–' + e.strftime('%H:%M' if e.date() == s.date() else '%m-%d %H:%M')
         marker = '✅ ' if event.get('done', False) else ''
-        lines.append(f'• {span}  {marker}{clean(event["title"])}')
+        deadline = '  ⏰ 截止 ' + deadline_label(event['due'], zone, now) if event.get('due') is not None else ''
+        lines.append(f'• {span}  {marker}{clean(event["title"])}{deadline}')
         if event['notes']:
             lines.append('  📝 ' + clean(event['notes']))
     if not events:
@@ -209,11 +239,11 @@ def execute(path, request):
         raise AgendaError('输入必须是 JSON 对象')
     action = request.get('action')
     fields = {
-        'add': {'title', 'start', 'end', 'notes', 'done', 'allow_conflict'},
+        'add': {'title', 'start', 'end', 'notes', 'done', 'due', 'allow_conflict'},
         'update': {'id', 'changes', 'allow_conflict'},
         'delete': {'id'},
-        'list': {'period', 'from', 'to', 'query', 'status'},
-        'summary': {'period', 'status'},
+        'list': {'period', 'from', 'to', 'query', 'status', 'due_before'},
+        'summary': {'period', 'status', 'due_before'},
     }
     if action not in fields:
         raise AgendaError('action 必须为 add/list/update/delete/summary')
@@ -246,13 +276,14 @@ def execute(path, request):
             return {'ok': True, 'deleted': old}
         if action == 'add':
             event = {'id': uuid.uuid4().hex, 'title': request.get('title'), 'start': request.get('start', now.astimezone(zone).date().isoformat()),
-                     'end': request.get('end'), 'notes': request.get('notes'), 'done': request.get('done', False)}
+                     'end': request.get('end'), 'notes': request.get('notes'), 'done': request.get('done', False), 'due': request.get('due')}
         else:
             changes = request.get('changes')
-            if not isinstance(changes, dict) or not changes or set(changes) - {'title', 'start', 'end', 'notes', 'done'}:
-                raise AgendaError('changes 必须包含可修改字段 title/start/end/notes/done')
+            if not isinstance(changes, dict) or not changes or set(changes) - {'title', 'start', 'end', 'notes', 'done', 'due'}:
+                raise AgendaError('changes 必须包含可修改字段 title/start/end/notes/done/due')
             event = {**old, **changes}
         validate_event(event)
+        validate_deadline(event, zone)
         conflicts = [e for e in events if e['id'] != event['id'] and overlaps(event, e, zone)]
         if conflicts and not request.get('allow_conflict', False):
             return {'ok': False, 'error': 'conflict', 'message': '时间冲突，尚未保存；请用户决定是否重叠安排', 'conflicts': conflicts}

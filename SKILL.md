@@ -27,9 +27,9 @@ python3 ~/.hermes/skills/productivity/DayLeaf/scripts/agenda.py <<'JSON'
 JSON
 ```
 
-`add` 的 `title` 必填；`start` 可省略，省略时以请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期保存。`start` 接受 `YYYY-MM-DD` 日期或带 UTC 偏移的 ISO 8601 日期时间。`end` 可省略或为 null；有值时必须与 `start` 精度相同且严格晚于开始。`notes` 可省略或为 null。存储字段为 `{id,title,start,end,notes,done}`；`done` 为布尔值，添加时可省略，默认 `false`。文件版本仍为 1，兼容旧日程。
+`add` 的 `title` 必填；`start` 可省略，省略时以请求 `timezone`（默认 `Asia/Shanghai`）中的登记当天日期保存。`start` 接受 `YYYY-MM-DD` 日期或带 UTC 偏移的 ISO 8601 日期时间。`end` 可省略或为 null；有值时必须与 `start` 精度相同且严格晚于开始。`notes` 可省略或为 null。存储字段为 `{id,title,start,end,notes,done,due}`；`done` 为布尔值，添加时可省略，默认 `false`。`due` 可省略或为 null，也接受与 `start` 相同的两种时间形式，精度可独立。文件版本仍为 1，兼容旧日程。
 
-`list` 请求字段：`period`、`from`、`to`、`query`、`status`、`timezone`；`summary` 请求字段：`period`、`status`、`timezone`。`status` 可为 `all`（默认）、`pending` 或 `done`，分别查询全部、未完成或已完成事项。
+`list` 请求字段：`period`、`from`、`to`、`query`、`status`、`due_before`、`timezone`；`summary` 请求字段：`period`、`status`、`due_before`、`timezone`。`status` 可为 `all`（默认）、`pending` 或 `done`，分别查询全部、未完成或已完成事项。
 
 接口示例（每行代表一次独立调用）：
 
@@ -83,6 +83,35 @@ JSON
 ```
 
 语义与兼容性说明见 [docs/completion.md](docs/completion.md)。
+
+## 截止时间（due）
+
+- 用户说“截止”“到期”或“deadline”时写入 `due`，不要塞进 `notes` 或 `start`。`start` 仍表示登记或计划执行的日期/时间，例如今天登记的经济学作业，明天 09:00 截止。
+- `add` 请求字段 `due` 可省略（默认 null）；接受 `YYYY-MM-DD` 或带 UTC 偏移的 ISO 8601 日期时间。其精度独立于 `start`，日期精度的开始可配具体钟点的截止。
+- 截止不得早于开始锚点，允许相等；日期按请求时区当地零点解析。截止不占时间、不会阻挡其他事项，不参与冲突检测，也不改变 `end` 的含义。
+- 先查询唯一完整 ID，再用 `update` 的 `changes.due` 调整；`changes.due:null` 清空，只修改用户指定字段。
+- `list`、`summary` 的 `due_before` 接受同样的两种时间形式，保留非空截止且解析值小于等于该边界的事项；可与 `status` 叠加。日期边界是当地零点，不代表整天结束。
+- 自行查询提醒候选时，可用 `list` 的 `status:"pending"` + `due_before`；不要附加登记日期范围，以免漏掉以前登记的事项。`summary` 仍受 today/week 范围限制。自动提醒使用下述独立脚本。
+- 摘要在标题后追加 `  ⏰ 截止 09:00`（当天）或 `10-27 09:00`（其他日期）；日期期限仅显示 `10-27`。卡片在原时间标签后追加 ` · 截止 10/27 09:00`，保持完成标记与行结构；`list` 返回原始 `due`。
+
+```json
+{"action":"add","title":"经济学作业","start":"2026-10-26","due":"2026-10-27T09:00:00+08:00"}
+{"action":"list","status":"pending","due_before":"2026-10-27T09:00:00+08:00","timezone":"Asia/Shanghai"}
+```
+
+旧文件缺少 `due` / `done` 时，在内存中补为 null / false，读取不改文件；下次成功写入持久化，文件版本仍为 1，保持单向归一化。顺序校验与展示说明见 [docs/deadline.md](docs/deadline.md)。
+
+### 截止提醒
+
+技能本身不创建或安排定时任务。部署者可配置外部调度器（如 Hermes cron），约每 10 分钟运行 `scripts/due_watch.py`，无需 LLM。以下仅为 cron 命令模板，替换所有路径为部署环境的绝对路径，Python 解释器路径也须确认：
+
+```cron
+*/10 * * * * /usr/bin/python3 /absolute/path/DayLeaf/scripts/due_watch.py --data /absolute/path/agenda/events.json --timezone Asia/Shanghai
+```
+
+脚本仅输出文本，不发送消息、访问网络或调用 LLM。未完成事项首次进入截止前 2 小时窗口时输出提醒；停机错过窗口时，截止后默认 12 小时内可补报，标为“已过期”。日期截止仍按当地零点计算，只显示日期，不显示分钟倒计时。调度器应逐字投递非空 stdout，不改写标题；空 stdout 表示无须发送，错误写入 stderr 并以非零退出，不将错误当作提醒投递。
+
+默认状态文件为数据文件同目录的 `due-reminders.json`，按事件 ID 和原始 `due` 值去重；同一组合只提醒一次，修改截止后可再次提醒，删除或完成后清理该事件的记录。`--state` 可指定其他状态文件；`--dry-run` 预览且不改状态；`--window-minutes` / `--grace-minutes` 可调整窗口与补报宽限，`--now` 接受带偏移的 ISO 时间用于测试。状态记录的是脚本输出，不是渠道送达确认；调度器负责可靠投递。
 
 ## 任务附带信息（notes）
 

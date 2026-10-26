@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from zoneinfo import ZoneInfo
-from agenda import resolve
+from agenda import deadline_label, resolve
 
 
 def card_data(snapshot, theme):
@@ -24,6 +24,8 @@ def card_data(snapshot, theme):
             label += ' — ' + end.strftime('%m/%d' if date_only else ('%H:%M' if end.date() == today.date() else '%m/%d %H:%M'))
         else:
             label += ' · 结束未定'
+        if event.get('due') is not None:
+            label += ' · 截止 ' + deadline_label(event['due'], zone, today, '/')
         done = event.get('done', False)
         events.append({'title': event['title'], 'time': ('✓ ' if done else '') + label, 'done': done})
     return {'theme': theme, 'day': f'{today.day:02}', 'month': f'{today.year} / {today.month:02}',
